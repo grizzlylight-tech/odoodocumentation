@@ -1,0 +1,61 @@
+name: Mirror to personal backup
+
+# Backs up this repo to abyessof-labs/<repo-name> on every push.
+# Auto-creates the destination private repo on first run.
+# Requires repo secret PERSONAL_MIRROR_TOKEN: a fine-grained PAT on the
+# abyessof-labs account with Contents:read-write + Administration:read-write.
+
+on:
+  push:
+    branches: ['**']      # any branch
+    tags: ['**']          # and tags
+  workflow_dispatch: {}    # allow manual run from the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history (all branches + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history, not shallow
+
+      - name: Mirror to personal account
+        env:
+          DEST_OWNER: abyessof-labs
+          TOKEN: ${{ secrets.PERSONAL_MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          DEST="https://x-access-token:${TOKEN}@github.com/${DEST_OWNER}/${REPO_NAME}.git"
+
+          echo "Ensuring destination repo ${DEST_OWNER}/${REPO_NAME} exists (private)..."
+          # Create the destination private repo if it doesn't exist yet.
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${DEST_OWNER}/${REPO_NAME}")
+          if [ "$HTTP_CODE" = "404" ]; then
+            echo "Destination does not exist; creating it..."
+            curl -s -X POST \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/user/repos" \
+              -d "{\"name\":\"${REPO_NAME}\",\"private\":true,\"description\":\"Automated backup mirror of grizzlylight-tech/${REPO_NAME}\"}" \
+              > /dev/null
+            # brief pause for the repo to be ready
+            sleep 3
+          else
+            echo "Destination already exists (HTTP ${HTTP_CODE}); will update it."
+          fi
+
+          echo "Force-pushing full mirror (all branches + tags)..."
+          git push --prune --mirror "${DEST}"
+          echo "Mirror complete: ${DEST_OWNER}/${REPO_NAME}"
